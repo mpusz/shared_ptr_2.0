@@ -17,6 +17,7 @@
 
 #include "shared_ptr_2.h"
 #include <gtest/gtest.h>
+#include <memory>
 
 template<typename T>
 using shared_ptr = experimental::shared_ptr<T>;
@@ -312,3 +313,7 @@ TEST(shared_ptr, DISABLED_constructorFromWeak)
 //    // test for different deleters
 //  }
 //}
+
+
+// test EBO (final/notfinal/empty/notempty deleter/allocator)
+// test for copying/moving state with different deleter/allocator types
