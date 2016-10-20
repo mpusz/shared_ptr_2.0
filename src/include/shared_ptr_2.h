@@ -9,22 +9,23 @@ namespace experimental {
 namespace detail {
 
 class state_base {
+  virtual void release_ptr() noexcept = 0;
+  virtual void destroy() noexcept = 0;
+
 public:
-  std::atomic_long shared_counter_{1};
-  std::atomic_long weak_counter_{0};
+  std::atomic_int shared_counter_{1};
+  std::atomic_int weak_counter_{1};
 
   state_base() = default;
   state_base(const state_base&) = delete;
   state_base& operator=(const state_base&) = delete;
   virtual ~state_base() = default;
-  virtual void release_ptr() noexcept = 0;
-  virtual void destroy() noexcept = 0;
 
   void release()
   {
     if(--shared_counter_ == 0) {
       release_ptr();
-      if(weak_counter_ == 0) {
+      if(--weak_counter_ == 0) {
         destroy();
       }
     }
@@ -52,6 +53,28 @@ struct ebo_helper<T, Idx, false>
 //  constexpr const T& get() const { return t_; }
 private:
   T t_;
+};
+
+template<typename A>
+class alloc_guard {
+public:
+  using alloc_traits = std::allocator_traits<A>;
+  using pointer = typename alloc_traits::pointer;
+
+  explicit alloc_guard(A& alloc, pointer ptr) noexcept : alloc_{alloc}, ptr_{ptr} {}
+  alloc_guard(const alloc_guard&) = delete;
+  alloc_guard& operator=(const alloc_guard&) = delete;
+  ~alloc_guard()
+  {
+    if(ptr_) {
+      alloc_traits::deallocate(alloc_, ptr_, 1);
+    }
+  }
+  void release() { ptr_ = nullptr; }
+
+private:
+  A& alloc_;
+  pointer ptr_;
 };
 
 template<typename Ptr,
@@ -84,9 +107,8 @@ public:
   {
     allocator_type alloc{allocator()};
     using alloc_traits = std::allocator_traits<allocator_type>;
-    // TODO add exception safety
+    alloc_guard<allocator_type> guard{alloc, this};
     alloc_traits::destroy(alloc, this);
-    alloc_traits::deallocate(alloc, this, 1);
   }
 };
 
@@ -121,12 +143,9 @@ public:
 
     typename state_type::allocator_type alloc{a};
     state_type* buffer = alloc_traits::allocate(alloc, 1);
-    try {
-      alloc_traits::construct(alloc, buffer, p, std::forward<D>(d), std::forward<A>(a));
-    }
-    catch(...) {
-      alloc_traits::deallocate(alloc, buffer, 1);
-    }
+    alloc_guard<typename state_type::allocator_type> guard{alloc, buffer};
+    alloc_traits::construct(alloc, buffer, p, std::forward<D>(d), std::forward<A>(a));
+    guard.release();
     base_ = buffer;
   }
   catch(...) {
@@ -174,7 +193,7 @@ class shared_ptr {
   template<typename U> friend class weak_ptr;
 
 public:
-  using element_type = T;
+  using element_type = std::remove_extent_t<T>;
   using weak_type = weak_ptr<T>;
 
   // 20.11.2.2.1, constructors:
