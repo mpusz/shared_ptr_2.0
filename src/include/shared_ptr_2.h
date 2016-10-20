@@ -8,28 +8,26 @@ namespace experimental {
 
 namespace detail {
 
-class state_base {
-  virtual void release_ptr() noexcept = 0;
-  virtual void destroy() noexcept = 0;
-
+template<typename A>
+class alloc_guard {
 public:
-  std::atomic_int shared_counter_{1};
-  std::atomic_int weak_counter_{1};
+  using alloc_traits = std::allocator_traits<A>;
+  using pointer = typename alloc_traits::pointer;
 
-  state_base() = default;
-  state_base(const state_base&) = delete;
-  state_base& operator=(const state_base&) = delete;
-  virtual ~state_base() = default;
-
-  void release()
+  explicit alloc_guard(A& alloc, pointer ptr) noexcept : alloc_{alloc}, ptr_{ptr} {}
+  alloc_guard(const alloc_guard&) = delete;
+  alloc_guard& operator=(const alloc_guard&) = delete;
+  ~alloc_guard()
   {
-    if(--shared_counter_ == 0) {
-      release_ptr();
-      if(--weak_counter_ == 0) {
-        destroy();
-      }
+    if(ptr_) {
+      alloc_traits::deallocate(alloc_, ptr_, 1);
     }
   }
+  void release() { ptr_ = nullptr; }
+
+private:
+  A& alloc_;
+  pointer ptr_;
 };
 
 template<typename T, int Idx, bool UseEbo = !std::is_final<T>::value && std::is_empty<T>::value>
@@ -55,26 +53,28 @@ private:
   T t_;
 };
 
-template<typename A>
-class alloc_guard {
-public:
-  using alloc_traits = std::allocator_traits<A>;
-  using pointer = typename alloc_traits::pointer;
+class state_base {
+  virtual void release_ptr() noexcept = 0;
+  virtual void destroy() noexcept = 0;
 
-  explicit alloc_guard(A& alloc, pointer ptr) noexcept : alloc_{alloc}, ptr_{ptr} {}
-  alloc_guard(const alloc_guard&) = delete;
-  alloc_guard& operator=(const alloc_guard&) = delete;
-  ~alloc_guard()
+public:
+  std::atomic_int shared_counter_{1};
+  std::atomic_int weak_counter_{1};
+
+  state_base() = default;
+  state_base(const state_base&) = delete;
+  state_base& operator=(const state_base&) = delete;
+  virtual ~state_base() = default;
+
+  void release()
   {
-    if(ptr_) {
-      alloc_traits::deallocate(alloc_, ptr_, 1);
+    if(--shared_counter_ == 0) {
+      release_ptr();
+      if(--weak_counter_ == 0) {
+        destroy();
+      }
     }
   }
-  void release() { ptr_ = nullptr; }
-
-private:
-  A& alloc_;
-  pointer ptr_;
 };
 
 template<typename Ptr,
@@ -88,14 +88,6 @@ class state final : public state_base, private ebo_helper<D, 0>, private ebo_hel
   A& allocator() { return static_cast<ABase&>(*this).get(); }
 public:
   using allocator_type = typename std::allocator_traits<A>::template rebind_alloc<state>;
-  state(const state& other)
-  {
-
-  }
-  state(state&& other) noexcept
-  {
-
-  }
   explicit state(Ptr ptr) noexcept : state{ptr, D{}, A{}} {}
   template<typename DD>
   state(Ptr ptr, DD&& d) noexcept : state{ptr, std::forward<DD>(d), A{}} {}
