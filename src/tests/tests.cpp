@@ -20,7 +20,11 @@
 #include <memory>
 
 template<typename T>
+using weak_ptr = experimental::weak_ptr<T>;
+
+template<typename T>
 using shared_ptr = experimental::shared_ptr<T>;
+
 
 namespace {
 
@@ -84,6 +88,108 @@ bool operator!=(const test_allocator<T1>& lhs, const test_allocator<T2>& rhs)
   return std::rel_ops::operator!=(lhs, rhs);
 }
 }
+
+
+
+
+TEST(weak_ptr, defaultConstructor)
+{
+  weak_ptr<A> ptr;
+  EXPECT_EQ(0, ptr.use_count());
+}
+
+TEST(weak_ptr, copyConstructorEmpty)
+{
+  weak_ptr<A> ptr1;
+  weak_ptr<A> ptr2{ptr1};
+  EXPECT_EQ(ptr1.use_count(), ptr2.use_count());
+  EXPECT_EQ(0, ptr2.use_count());
+}
+
+TEST(weak_ptr, sharedConstructorEmpty)
+{
+  shared_ptr<A> ptr1;
+  weak_ptr<A> ptr2{ptr1};
+  EXPECT_EQ(ptr1.use_count(), ptr2.use_count());
+  EXPECT_EQ(0, ptr2.use_count());
+}
+
+TEST(weak_ptr, copyConstructorEmptyConvertible)
+{
+  weak_ptr<B> ptr1;
+  weak_ptr<A> ptr2{ptr1};
+  EXPECT_EQ(ptr1.use_count(), ptr2.use_count());
+  EXPECT_EQ(0, ptr2.use_count());
+}
+
+TEST(weak_ptr, sharedConstructorEmptyConvertible)
+{
+  shared_ptr<A> ptr1;
+  weak_ptr<A> ptr2{ptr1};
+  EXPECT_EQ(ptr1.use_count(), ptr2.use_count());
+  EXPECT_EQ(0, ptr2.use_count());
+}
+
+TEST(weak_ptr, sharedConstructorNotEmptyConvertible)
+{
+  shared_ptr<B> ptr1{new B};
+  weak_ptr<A> ptr2{ptr1};
+  EXPECT_EQ(ptr1.use_count(), ptr2.use_count());
+  EXPECT_EQ(1, ptr2.use_count());
+}
+
+TEST(weak_ptr, copyConstructorNotEmptyConvertible)
+{
+  shared_ptr<B> ptr1{new B};
+  weak_ptr<A> ptr2{ptr1};
+  weak_ptr<A> ptr3{ptr2};
+  EXPECT_EQ(ptr2.use_count(), ptr3.use_count());
+  EXPECT_EQ(1, ptr3.use_count());
+}
+
+
+
+
+TEST(weak_ptr, moveConstructorEmpty)
+{
+  weak_ptr<A> ptr1;
+  weak_ptr<A> ptr2{std::move(ptr1)};
+  EXPECT_EQ(0, ptr2.use_count());
+  EXPECT_EQ(0, ptr1.use_count());
+}
+
+TEST(weak_ptr, moveConstructorEmptyConvertible)
+{
+  weak_ptr<B> ptr1;
+  weak_ptr<A> ptr2{std::move(ptr1)};
+  EXPECT_EQ(0, ptr2.use_count());
+  EXPECT_EQ(0, ptr1.use_count());
+}
+
+TEST(weak_ptr, moveConstructorNotEmpty)
+{
+  shared_ptr<A> ptr1{new A};
+  weak_ptr<A> ptr2{ptr1};
+  weak_ptr<A> ptr3{std::move(ptr2)};
+  EXPECT_EQ(1, ptr3.use_count());
+  EXPECT_EQ(0, ptr2.use_count());
+}
+
+TEST(weak_ptr, moveConstructorNotEmptyConvertible)
+{
+  shared_ptr<B> ptr1{new B};
+  weak_ptr<A> ptr2{ptr1};
+  weak_ptr<A> ptr3{std::move(ptr2)};
+  EXPECT_EQ(1, ptr3.use_count());
+  EXPECT_EQ(0, ptr2.use_count());
+}
+
+
+
+
+
+
+
 
 
 TEST(shared_ptr, defaultConstructor)
@@ -282,12 +388,13 @@ TEST(shared_ptr, moveConstructorOtherTypeEmpty)
   EXPECT_EQ(0, ptr.use_count());
 }
 
-TEST(shared_ptr, DISABLED_constructorFromWeak)
+TEST(shared_ptr, constructorFromWeak)
 {
-//  shared_ptr<B> p1{new B};
-//  experimental::weak_ptr<B> p2{p1};
-//  shared_ptr<A> ptr{p2};
-//  ptr.use_count() == p2.use_count();
+  shared_ptr<B> p1{new B};
+  experimental::weak_ptr<B> p2{p1};
+  shared_ptr<A> ptr{p2};
+  EXPECT_EQ(p2.use_count(), ptr.use_count());
+  EXPECT_EQ(2, ptr.use_count());
 }
 
 //void foo()

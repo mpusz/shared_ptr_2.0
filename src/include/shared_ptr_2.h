@@ -59,7 +59,7 @@ class state_base {
 
 public:
   std::atomic_int shared_counter_{1};
-  std::atomic_int weak_counter_{1};
+  std::atomic_int weak_counter_{1};    // #weak + (#shared != 0)
 
   state_base() = default;
   state_base(const state_base&) = delete;
@@ -75,6 +75,15 @@ public:
       }
     }
   }
+
+  void weak_release()
+  {
+    if(--weak_counter_ == 0) {
+      destroy();
+    }
+  }
+
+  long use_count() const noexcept { return shared_counter_.load(); }
 };
 
 template<typename Ptr,
@@ -104,7 +113,10 @@ public:
   }
 };
 
+class weak_state;
+
 class shared_state {
+  friend class weak_state;
   state_base* base_ = nullptr;
 public:
   shared_state() = default;
@@ -152,6 +164,8 @@ public:
     }
   }
 
+  shared_state(const weak_state& other);
+
   shared_state(shared_state&& other) noexcept : base_{other.base_}
   {
     other.base_ = nullptr;
@@ -164,14 +178,147 @@ public:
     }
   }
 
-  long use_count() const noexcept { return base_ ? base_->shared_counter_.load() : 0; }
+  long use_count() const noexcept { return base_ ? base_->use_count() : 0; }
 };
+
+
+class weak_state {
+  friend class shared_state;
+  state_base* base_ = nullptr;
+public:
+  weak_state() = default;
+
+  weak_state(const weak_state& other) noexcept : base_{other.base_}
+  {
+    if(base_) {
+      ++base_->weak_counter_;
+    }
+  }
+
+  weak_state(const shared_state& other) noexcept : base_{other.base_}
+  {
+    if(base_) {
+      ++base_->weak_counter_;
+    }
+  }
+
+  weak_state(weak_state&& other) noexcept : base_{other.base_}
+  {
+    other.base_ = nullptr;
+  }
+
+  ~weak_state()
+  {
+    if(base_){
+      base_->weak_release();
+    }
+  }
+
+  long use_count() const noexcept { return base_ ? base_->use_count() : 0; }
+  bool expired() const noexcept { return base_ == nullptr; }
+};
+
+
+shared_state::shared_state(const weak_state& other) : base_{other.base_}
+{
+  if(base_) {
+    ++base_->shared_counter_;
+  }
+  else {
+    throw std::bad_weak_ptr{};
+  }
+}
 
 }
 
+template <typename T>
+class shared_ptr;
 
 template <typename T>
-class weak_ptr;
+class weak_ptr {
+  template<typename U>
+  using Convertible = std::enable_if_t<std::is_convertible<U, T*>::value>;
+
+  T* ptr_ = nullptr;
+  detail::weak_state state_;
+
+  template<typename U> friend class weak_ptr;
+  template<typename U> friend class shared_ptr;
+
+public:
+  using element_type = std::remove_extent_t<T>;
+
+// 20.11.2.3.1, constructors
+  constexpr weak_ptr() noexcept = default;
+
+  template<class Y, typename = Convertible<Y*>>
+  weak_ptr(const shared_ptr<Y>& r) noexcept : ptr_{r.ptr_}, state_{r.state_}
+  {
+  }
+
+  weak_ptr(weak_ptr const& r) noexcept = default;
+
+  template<class Y, typename = Convertible<Y*>>
+  weak_ptr(const weak_ptr<Y>& r) noexcept : ptr_{r.ptr_}, state_{r.state_}
+  {
+  }
+
+  weak_ptr(weak_ptr&& r) noexcept : ptr_{std::move(r.ptr_)}, state_{std::move(r.state_)}
+  {
+    r.ptr_ = nullptr;
+  }
+
+  template<class Y, typename = Convertible<Y*>>
+  weak_ptr(weak_ptr<Y>&& r) noexcept : ptr_{std::move(r.ptr_)}, state_{std::move(r.state_)}
+  {
+    r.ptr_ = nullptr;
+  }
+
+// 20.11.2.3.2, destructor
+  ~weak_ptr() = default;
+
+// 20.11.2.3.3, assignment
+  weak_ptr& operator=(const weak_ptr& r) noexcept
+  {
+    (void)r;
+    return *this;
+  }
+  template<class Y> weak_ptr& operator=(const weak_ptr<Y>& r) noexcept
+  {
+    (void)r;
+    return *this;
+  }
+
+  template<class Y> weak_ptr& operator=(const shared_ptr<Y>& r) noexcept
+  {
+    (void)r;
+    return *this;
+  }
+  weak_ptr& operator=(weak_ptr&& r) noexcept
+  {
+    (void)r;
+    return *this;
+  }
+  template<class Y> weak_ptr& operator=(weak_ptr<Y>&& r) noexcept
+  {
+    (void)r;
+    return *this;
+  }
+
+  // 20.11.2.3.4, modifiers
+  void swap(weak_ptr& r) noexcept;
+  void reset() noexcept;
+// 20.11.2.3.5, observers
+  long use_count() const noexcept { return state_.use_count(); }
+  bool expired() const noexcept { return state_.expired(); }
+  shared_ptr<T> lock() const noexcept;
+  template<class U> bool owner_before(shared_ptr<U> const& b) const;
+  template<class U> bool owner_before(weak_ptr<U> const& b) const;
+};
+
+// 20.11.2.3.6, specialized algorithms
+template<class T> void swap(weak_ptr<T>& a, weak_ptr<T>& b) noexcept;
+
 
 template <class T>
 class shared_ptr {
@@ -279,14 +426,14 @@ public:
   }
 
   template <class Y>
-  shared_ptr(const shared_ptr<Y>& r, T* p) noexcept : ptr_(p), state_(r.state_)
+  shared_ptr(const shared_ptr<Y>& r, T* p) noexcept : ptr_{p}, state_{r.state_}
   {
   }
 
   shared_ptr(const shared_ptr& r) noexcept = default;
 
   template <class Y, typename = Convertible<Y*>>
-  shared_ptr(const shared_ptr<Y>& r) noexcept : ptr_(r.ptr_), state_{r.state_}
+  shared_ptr(const shared_ptr<Y>& r) noexcept : ptr_{r.ptr_}, state_{r.state_}
   {
   }
 
@@ -305,9 +452,6 @@ public:
   explicit shared_ptr(const weak_ptr<Y>& r) : ptr_{r.ptr_}, state_{r.state_}
   {
     static_assert(std::is_convertible<Y*, T*>::value, "Y shall be convertible to T*");
-    if(r.expired) {
-      throw std::bad_weak_ptr{};
-    }
   }
 
   template <class Y, class D, typename = Convertible<typename std::unique_ptr<Y, D>::pointer>>
