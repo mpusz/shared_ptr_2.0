@@ -165,6 +165,7 @@ public:
   }
 
   shared_state(const weak_state& other);
+  shared_state(const weak_state& other, std::nothrow_t);
 
   shared_state(shared_state&& other) noexcept : base_{other.base_}
   {
@@ -207,6 +208,40 @@ public:
     other.base_ = nullptr;
   }
 
+  weak_state& operator=(const weak_state& other) noexcept
+  {
+    if(other.base_) {
+      ++other.base_->weak_counter_;
+    }
+    if(base_) {
+      base_->weak_release();
+    }
+    base_ = other.base_;
+    return *this;
+  }
+
+  weak_state& operator=(const shared_state& other) noexcept
+  {
+    if(other.base_) {
+      ++other.base_->weak_counter_;
+    }
+    if(base_) {
+      base_->weak_release();
+    }
+    base_ = other.base_;
+    return *this;
+  }
+
+  weak_state& operator=(weak_state&& other) noexcept
+  {
+    if(base_) {
+      base_->weak_release();
+    }
+    base_ = other.base_;
+    other.base_ = nullptr;
+    return *this;
+  }
+
   ~weak_state()
   {
     if(base_){
@@ -221,11 +256,20 @@ public:
 
 shared_state::shared_state(const weak_state& other) : base_{other.base_}
 {
-  if(base_) {
+  // TODO add atomic operation
+  if(base_ && base_->shared_counter_.load() > 0) {
     ++base_->shared_counter_;
   }
   else {
     throw std::bad_weak_ptr{};
+  }
+}
+
+shared_state::shared_state(const weak_state& other, std::nothrow_t) : base_{other.base_}
+{
+  // TODO add atomic operation
+  if(base_ && base_->shared_counter_.load() > 0) {
+    ++base_->shared_counter_;
   }
 }
 
@@ -251,6 +295,9 @@ public:
 // 20.11.2.3.1, constructors
   constexpr weak_ptr() noexcept = default;
 
+  // lock() is needed in case of converting operation. r.ptr_ may already
+  // have been invalidated in multithreaded application. The ptr_(r.ptr_)
+  // conversion may require access to *r.ptr_ (virtual inheritance).
   template<class Y, typename = Convertible<Y*>>
   weak_ptr(const shared_ptr<Y>& r) noexcept : ptr_{r.ptr_}, state_{r.state_}
   {
@@ -259,7 +306,7 @@ public:
   weak_ptr(weak_ptr const& r) noexcept = default;
 
   template<class Y, typename = Convertible<Y*>>
-  weak_ptr(const weak_ptr<Y>& r) noexcept : ptr_{r.ptr_}, state_{r.state_}
+  weak_ptr(const weak_ptr<Y>& r) noexcept : ptr_{r.lock().get()}, state_{r.state_}
   {
   }
 
@@ -269,7 +316,7 @@ public:
   }
 
   template<class Y, typename = Convertible<Y*>>
-  weak_ptr(weak_ptr<Y>&& r) noexcept : ptr_{std::move(r.ptr_)}, state_{std::move(r.state_)}
+  weak_ptr(weak_ptr<Y>&& r) noexcept : ptr_{r.lock().get()}, state_{std::move(r.state_)}
   {
     r.ptr_ = nullptr;
   }
@@ -280,28 +327,35 @@ public:
 // 20.11.2.3.3, assignment
   weak_ptr& operator=(const weak_ptr& r) noexcept
   {
-    (void)r;
+    ptr_ = r.ptr_;
+    state_ = r.state_;
     return *this;
   }
   template<class Y> weak_ptr& operator=(const weak_ptr<Y>& r) noexcept
   {
-    (void)r;
+    ptr_ = r.lock().get();
+    state_ = r.state_;
     return *this;
   }
 
   template<class Y> weak_ptr& operator=(const shared_ptr<Y>& r) noexcept
   {
-    (void)r;
+    ptr_ = r.ptr_;
+    state_ = r.state_;
     return *this;
   }
   weak_ptr& operator=(weak_ptr&& r) noexcept
   {
-    (void)r;
+    ptr_ = r.ptr_;
+    state_ = std::move(r.state_);
+    r.ptr_ = nullptr;
     return *this;
   }
   template<class Y> weak_ptr& operator=(weak_ptr<Y>&& r) noexcept
   {
-    (void)r;
+    ptr_ = r.lock().get();
+    state_ = std::move(r.state_);
+    r.ptr_ = nullptr;
     return *this;
   }
 
@@ -311,7 +365,7 @@ public:
 // 20.11.2.3.5, observers
   long use_count() const noexcept { return state_.use_count(); }
   bool expired() const noexcept { return state_.expired(); }
-  shared_ptr<T> lock() const noexcept;
+  shared_ptr<T> lock() const noexcept { return shared_ptr<T>(*this, std::nothrow); }
   template<class U> bool owner_before(shared_ptr<U> const& b) const;
   template<class U> bool owner_before(weak_ptr<U> const& b) const;
 };
@@ -330,6 +384,12 @@ class shared_ptr {
 
   template<typename U> friend class shared_ptr;
   template<typename U> friend class weak_ptr;
+
+  template <class Y>
+  explicit shared_ptr(const weak_ptr<Y>& r, std::nothrow_t) : ptr_{r.ptr_}, state_{r.state_, std::nothrow}
+  {
+    static_assert(std::is_convertible<Y*, T*>::value, "Y shall be convertible to T*");
+  }
 
 public:
   using element_type = std::remove_extent_t<T>;
